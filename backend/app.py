@@ -1,42 +1,61 @@
-from flask import Flask, jsonify
-from kafka import KafkaProducer, KafkaConsumer
-import joblib
+from flask import Flask, request, jsonify
+from kafka import KafkaProducer
+from flask_cors import CORS
 import json
+from pyspark.sql import SparkSession
+from pyspark.ml.regression import LinearRegressionModel
+from pyspark.ml.linalg import Vectors
 
 app = Flask(__name__)
 
-# Charger le modèle sauvegardé
-model = joblib.load('')
+# Activer CORS pour toutes les routes, avec les origines spécifiques
+CORS(app)
 
-# Configuration de Kafka
-KAFKA_BROKER_URL = 'localhost:9092'  # Changez cela selon votre configuration Kafka
-TOPIC_NAME = 'predictions_topic'
+# Configuration de Kafka Producer
+producer = KafkaProducer(
+    bootstrap_servers='kafka:9092',
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
 
-# Initialisation du producteur Kafka
-producer = KafkaProducer(bootstrap_servers=KAFKA_BROKER_URL,
-                         value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+# Créer une session Spark
+spark = SparkSession.builder \
+    .appName("BitcoinPricePredictionAPI") \
+    .getOrCreate()
 
-# Initialisation du consommateur Kafka
-consumer = KafkaConsumer(TOPIC_NAME,
-                         bootstrap_servers=KAFKA_BROKER_URL,
-                         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                         auto_offset_reset='earliest',
-                         enable_auto_commit=True)
+# Charger le modèle de régression linéaire enregistré
+model_path = "/shared_volume_model/bitcoin_model/"  # Chemin du modèle
+lr_model = LinearRegressionModel.load(model_path)
 
-@app.route('/api/predictions', methods=['GET'])
+@app.route('/api/send_trade_data', methods=['POST'])
+def send_trade_data():
+    trade_data = request.json
+    producer.send('bitcoin_data', trade_data)
+    return jsonify({"status": "success", "message": "Trade data sent to Kafka"}), 200
+
+@app.route('/api/get_predictions', methods=['POST'])
 def get_predictions():
-    # Supposons que tu utilises les dernières données pour la prédiction
-    # Ajuste ceci pour obtenir les données réelles de trading
-    sample_data = [[timestamp, prix_achat, prix_vente, volume]]
+    request_data = request.json
 
-    # Envoyer les données au topic Kafka
-    producer.send(TOPIC_NAME, {'data': sample_data})
-    producer.flush()  # Assurez-vous que les données sont envoyées
+    # Affiche les données reçues pour vérifier le volume
+    print(f"Données reçues pour prédiction : {request_data}")
 
-    # Attendre la réponse de Kafka (vous pouvez le faire de manière asynchrone dans un vrai projet)
-    for message in consumer:
-        predictions = model.predict(message.value['data'])
-        return jsonify(predictions.tolist())
+    volume = request_data.get('volume')
+    if volume is None:
+        return jsonify({"error": "No volume data provided"}), 400
+
+    # Affiche le volume utilisé pour la prédiction
+    print(f"Volume utilisé pour la prédiction : {volume}")
+
+    # Convertir en vecteur pour Spark ML
+    features = Vectors.dense([volume])
+
+    # Créer un DataFrame Spark avec ces caractéristiques
+    data = spark.createDataFrame([(features, )], ["features"])
+
+    # Faire des prédictions
+    prediction = lr_model.transform(data).collect()[0].prediction
+
+    return jsonify({"prediction": prediction})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5551)
+    app.run(host='0.0.0.0', port=5551, debug=True)

@@ -1,11 +1,11 @@
 import './App.css';
-import Binance from './components/binance';
+import BitcoinPrediction from './components/BitcoinPrediction';
 
 function App() {
   return (
     <div className="App">
       <h1>Bitcoin Prices and Predictions</h1>
-      <Binance />
+      <BitcoinPrediction />
     </div>
   );
 }

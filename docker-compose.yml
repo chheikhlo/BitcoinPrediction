@@ -64,6 +64,7 @@ services:
       - "7077:7077"
     volumes:
       - ./app:/app
+      - shared_volume_model:/shared_volume_model
     environment:
       - INIT_DAEMON_STEP=setup_spark
       - PATH=/spark/bin:$PATH
@@ -77,22 +78,6 @@ services:
       - "8081:8081"
     environment:
       - "SPARK_MASTER=spark://spark-master:7077"
-
-  pyspark-notebook:
-    image: jupyter/pyspark-notebook
-    container_name: pyspark_notebook
-    ports:
-      - "8888:8888"
-    volumes:
-      - ./work:/home/jovyan/work
-      - ./work/model:/tmp/model_prediction
-    environment:
-      - PYSPARK_PYTHON=/usr/bin/python3
-      - PYSPARK_DRIVER_PYTHON=ipython3
-      - GRANT_SUDO=yes
-      - NB_GID=100
-      - GEN_CERT=yes
-    user: root
 
   kafka:
     image: wurstmeister/kafka
@@ -122,10 +107,13 @@ services:
     restart: always
     ports:
       - "5550:5550"
+      - "5551:5550"
     volumes:
       - ./backend:/app
+      - shared_volume_model:/shared_volume_model
     environment:
       - FLASK_ENV=development
+      - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
     depends_on:
       - kafka
       - zookeeper
@@ -143,3 +131,4 @@ volumes:
   hadoop_namenode:
   hadoop_datanode:
   hadoop_historyserver:
+  shared_volume_model:
