@@ -15,12 +15,14 @@ const BitcoinPrediction = () => {
     ws.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
       const formattedTrade = {
-        timestamp: data.T,  // Timestamp de la transaction
-        price: parseFloat(data.p),  // Prix de la transaction
-        volume: parseFloat(data.q)  // Volume échangé
+        timestamp: data.T,
+        price: parseFloat(data.p),
+        volume: parseFloat(data.q),
+        marketMaker: data.m
       };
 
-      setTrades((prevTrades) => [formattedTrade, ...prevTrades].slice(0, 100));
+      // Limiter le nombre de trades à 100 pour éviter l'entassement à l'affichage des points sur le graphe
+      setTrades((limitTrades) => [formattedTrade, ...limitTrades].slice(0, 100));
 
       // Envoyer les données au backend Flask
       axios.post('http://localhost:5551/api/send_trade_data', formattedTrade)
@@ -33,37 +35,50 @@ const BitcoinPrediction = () => {
   // Récupérer les prédictions depuis le backend Flask
   useEffect(() => {
     if (trades.length > 0) {
-      const latestVolume = trades[0].volume;  // Utiliser le volume du dernier trade reçu
+      // Les 30 dernières transactions
+      const latestTrades = trades.slice(0, 30);
 
-      axios.post('http://localhost:5551/api/get_predictions', { volume: latestVolume })  // Envoyer le volume au backend
-        .then(response => setPredictions(prevPredictions => [...prevPredictions, response.data.prediction]))
+      axios.post('http://localhost:5551/api/get_predictions', {
+        sequence: latestTrades.map(trade => [trade.price, trade.volume, trade.marketMaker])
+      })
+        .then(response => {
+          console.log('Prédictions reçues:', response.data.prediction);
+          // Remplacer complètement les prédictions pour qu'elles correspondent aux dernières transactions
+          // En prenant tout le temps la dernière et donc à l'indice 0
+          setPredictions(response.data.prediction[0]);
+        })
         .catch(error => console.error("Erreur Axios :", error));
     }
   }, [trades]);
 
-  // Configuration du graphique avec ECharts
   const option = {
-    title: {
-      text: 'BTC/USDT Cours et prédictions'
-    },
     tooltip: {
       trigger: 'axis'
     },
     xAxis: {
       type: 'category',
-      data: trades.map(trade => new Date(trade.timestamp).toLocaleTimeString())  // Affiche le timestamp sur l'axe des X
+      data: trades
+        .slice(0, 30)
+        .map(trade => new Date(trade.timestamp).toLocaleTimeString())
+        .filter((_, index) => index % 5 === 0),
+      inverse: true
     },
-    yAxis: { type: 'value' },
+    yAxis: {
+      type: 'value',
+      min: 66800,
+      max: 67400,
+      interval: 50
+    },
     series: [
       {
         name: 'Prix de transaction',
         type: 'line',
-        data: trades.map(trade => trade.price)
+        data: trades.slice(0, 6).map(trade => trade.price)
       },
       {
         name: 'Prédictions',
         type: 'line',
-        data: predictions
+        data: predictions.slice(0, trades.length)
       }
     ]
   };

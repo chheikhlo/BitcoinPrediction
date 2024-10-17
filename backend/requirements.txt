@@ -5,3 +5,5 @@ Werkzeug==2.0.3
 Flask-CORS==3.0.10
 pyspark
 numpy
+tensorflow
+scikit-learn

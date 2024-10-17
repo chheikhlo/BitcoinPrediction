@@ -1,41 +1,81 @@
 # -*- coding: utf-8 -*-
-
+import numpy as np
 from pyspark.sql import SparkSession
-from pyspark.ml.feature import VectorAssembler
-from pyspark.ml.regression import LinearRegression
-from pyspark.ml.evaluation import RegressionEvaluator
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+import pickle
 
-# Créer une session Spark
-spark = SparkSession.builder.appName("BitcoinPricePredictionModel").getOrCreate()
+# Créer une session Spark pour lire les données
+spark = SparkSession.builder.appName("BitcoinPriceAndPrediction").getOrCreate()
 
-# Charger les données depuis HDFS (parquet files)
-data_df = spark.read.parquet("hdfs://namenode:9000/bitcoin_data/")
+# Charger les données à partir de HDFS
+df = spark.read.parquet("hdfs://namenode:9000/bitcoin_data_topic/")
 
-# Échantillonnage aléatoire des données (10% des données)
-sampled_df = data_df.sample(withReplacement=False, fraction=0.1, seed=42)
+# Extraire les données sous forme de tableau numpy (prix, volume, market maker)
+data = df.select("price", "volume", "marketMaker").toPandas()
 
-# Sélectionner les colonnes pertinentes pour l'entraînement du modèle (ex: volume et prix)
-assembler = VectorAssembler(inputCols=["volume"], outputCol="features")
+# Convertir la colonne "marketMaker" en 0 ou 1 (binaire), pour que le modèle puisse l'utiliser
+data["marketMaker"] = data["marketMaker"].apply(lambda x: 1 if x else 0)
 
-# Créer le DataFrame avec les caractéristiques et l'étiquette (le prix à prédire)
-assembled_df = assembler.transform(sampled_df).select("features", "price")
+# Normaliser les données pour que toutes les colonnes soient sur la même échelle (entre 0 et 1)
+scaler = MinMaxScaler()
+data_scaled = scaler.fit_transform(data)
 
-# Diviser les données en ensemble d'entraînement (80%) et de test (20%)
-train_df, test_df = assembled_df.randomSplit([0.8, 0.2], seed=1234)
+# Sauvegarder le scaler pour pouvoir l'utiliser dans le back pour la prédiction
+with open("/shared_volume_model/scaler.pkl", "wb") as f:
+    pickle.dump(scaler, f)
 
-# Créer un modèle de régression linéaire
-lr = LinearRegression(featuresCol="features", labelCol="price")
+# Fonction pour créer des séquences de données d'entrée et les prix à prédire
+def create_sequences(data, seq_length, future_steps):
+  input_sequences = []
+  target_prices = []
 
-# Entraîner le modèle sur l'ensemble d'entraînement
-lr_model = lr.fit(train_df)
+  # Boucle sur toutes les données possibles pour créer les séquences
+  for i in range(len(data) - seq_length - future_steps):
+      # Sélectionner une séquence d'entrée
+      input_sequence = data[i:i + seq_length]
 
-# Faire des prédictions sur l'ensemble de test
-predictions = lr_model.transform(test_df)
+      # Sélectionner les prix futurs (on recupère que la colonne des prix, index 0)
+      target_price = data[i + seq_length:i + seq_length + future_steps, 0]
 
-# Évaluer les performances du modèle à l'aide de l'erreur quadratique moyenne (RMSE)
-evaluator = RegressionEvaluator(labelCol="price", predictionCol="prediction", metricName="rmse")
-rmse = evaluator.evaluate(predictions)
-print("Root Mean Squared Error (RMSE) on test data: {}".format(rmse))
+      # Ajouter la séquence et le prix à prédire à la liste correspondante
+      input_sequences.append(input_sequence)
+      target_prices.append(target_price)
 
-# Sauvegarder le modèle entraîné dans backend
-lr_model.save("/shared_volume_model/bitcoin_model")
+  # Convertir les listes en tableaux numpy
+  input_sequences = np.array(input_sequences)
+  target_prices = np.array(target_prices)
+
+  return input_sequences, target_prices
+
+# Définir les paramètres pour les séquences
+seq_length = 30
+future_steps = 6
+
+# Créer les séquences d'entrée (X) et les prix à prédire (y)
+X, y = create_sequences(data_scaled, seq_length, future_steps)
+
+# Reshaper les données d'entrée pour les passer dans le modèle LSTM
+X = X.reshape((X.shape[0], X.shape[1], X.shape[2]))
+
+# Création du modèle LSTM
+model = Sequential()
+
+# Première couche LSTM, on spécifie la taille des séquences en entrée
+model.add(LSTM(50, return_sequences=True, input_shape=(seq_length, X.shape[2])))
+
+# Deuxième couche LSTM, sans retour des séquences (dernier état seulement)
+model.add(LSTM(50))
+
+# Couche Dense pour prédire le prix des 6 futures valeurs
+model.add(Dense(future_steps))
+
+# Compilation du modèle : on utilise 'adam' comme optimiseur et 'mse' (mean squared error) comme fonction de perte
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+
+# Entraînement du modèle avec les données d'entrée X et les étiquettes y
+model.fit(X, y, epochs=10, batch_size=32)
+
+# Sauvegarder le modèle entraîné pour pouvoir le réutiliser plus tard
+model.save("/shared_volume_model/bitcoin_model2.h5")

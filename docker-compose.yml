@@ -127,6 +127,22 @@ services:
     ports:
       - "3006:3000"
 
+  pyspark-notebook:
+    image: jupyter/pyspark-notebook
+    container_name: pyspark_notebook
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./app:/home/jovyan/work
+      - shared_volume_model:/shared_volume_model  
+    environment:
+      - PYSPARK_PYTHON=/usr/bin/python3
+      - PYSPARK_DRIVER_PYTHON=ipython3
+      - GRANT_SUDO=yes
+      - NB_GID=100
+      - GEN_CERT=yes
+    user: root
+
 volumes:
   hadoop_namenode:
   hadoop_datanode:
